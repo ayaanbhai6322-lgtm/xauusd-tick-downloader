@@ -1,52 +1,18 @@
-name: XAUUSD Tick Download
+name: XAUUSD Tick Download 2015 to 2022
 
 on:
   workflow_dispatch:
 
 jobs:
-  download:
+  download-year:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
-        include:
-          # 2025 Jan-Apr
-          - year: "2025"
-            month: "01"
-          - year: "2025"
-            month: "02"
-          - year: "2025"
-            month: "03"
-          - year: "2025"
-            month: "04"
-
-          # 2023 Jan-Dec
-          - year: "2023"
-            month: "01"
-          - year: "2023"
-            month: "02"
-          - year: "2023"
-            month: "03"
-          - year: "2023"
-            month: "04"
-          - year: "2023"
-            month: "05"
-          - year: "2023"
-            month: "06"
-          - year: "2023"
-            month: "07"
-          - year: "2023"
-            month: "08"
-          - year: "2023"
-            month: "09"
-          - year: "2023"
-            month: "10"
-          - year: "2023"
-            month: "11"
-          - year: "2023"
-            month: "12"
+        year: ["2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022"]
 
     steps:
       - name: Set up Python
@@ -57,10 +23,9 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Download XAUUSD month
+      - name: Download XAUUSD year
         env:
           YEAR: ${{ matrix.year }}
-          MONTH: ${{ matrix.month }}
         run: |
           python - << 'PY'
           import os, csv, lzma, struct, zipfile, calendar, time
@@ -69,15 +34,10 @@ jobs:
 
           SYMBOL = "XAUUSD"
           YEAR = int(os.environ["YEAR"])
-          MONTH = int(os.environ["MONTH"])
           PRICE_DIVISOR = 1000.0
 
-          out_dir = "output"
+          out_dir = f"output_{YEAR}"
           os.makedirs(out_dir, exist_ok=True)
-
-          tag = f"{YEAR}_{MONTH:02d}"
-          csv_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.csv")
-          zip_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.zip")
 
           def dukascopy_url(symbol, year, month, day, hour):
               # Dukascopy month zero-based: Jan=00, Feb=01, Dec=11
@@ -125,43 +85,56 @@ jobs:
 
               return []
 
-          days = calendar.monthrange(YEAR, MONTH)[1]
+          print("=" * 70)
+          print(f"Starting XAUUSD full year: {YEAR}")
+          print("=" * 70)
 
-          print("=" * 60)
-          print(f"Starting {SYMBOL} {tag}")
-          print("=" * 60)
+          for MONTH in range(1, 13):
+              tag = f"{YEAR}_{MONTH:02d}"
+              csv_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.csv")
+              zip_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.zip")
 
-          total_ticks = 0
+              days = calendar.monthrange(YEAR, MONTH)[1]
 
-          with open(csv_path, "w", newline="") as f:
-              writer = csv.writer(f)
-              writer.writerow(["time", "bid", "ask", "bid_volume", "ask_volume"])
+              print("\n" + "=" * 60)
+              print(f"Starting {SYMBOL} {tag}")
+              print("=" * 60)
 
-              for day in range(1, days + 1):
-                  day_ticks = 0
+              total_ticks = 0
 
-                  for hour in range(24):
-                      ticks = download_hour(SYMBOL, YEAR, MONTH, day, hour)
+              with open(csv_path, "w", newline="") as f:
+                  writer = csv.writer(f)
+                  writer.writerow(["time", "bid", "ask", "bid_volume", "ask_volume"])
 
-                      if ticks:
-                          writer.writerows(ticks)
-                          day_ticks += len(ticks)
-                          total_ticks += len(ticks)
+                  for day in range(1, days + 1):
+                      day_ticks = 0
 
-                  print(f"Day {day:02d}/{days} — ticks: {day_ticks:,}", flush=True)
+                      for hour in range(24):
+                          ticks = download_hour(SYMBOL, YEAR, MONTH, day, hour)
 
-          print(f"Month complete: {tag} — total ticks: {total_ticks:,}")
+                          if ticks:
+                              writer.writerows(ticks)
+                              day_ticks += len(ticks)
+                              total_ticks += len(ticks)
 
-          with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-              z.write(csv_path, arcname=os.path.basename(csv_path))
+                      print(f"Day {day:02d}/{days} — ticks: {day_ticks:,}", flush=True)
 
-          size_mb = os.path.getsize(zip_path) / 1024 / 1024
-          print(f"ZIP ready: {zip_path} — {size_mb:.2f} MB")
+              print(f"Month complete: {tag} — total ticks: {total_ticks:,}")
+
+              with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+                  z.write(csv_path, arcname=os.path.basename(csv_path))
+
+              os.remove(csv_path)
+
+              size_mb = os.path.getsize(zip_path) / 1024 / 1024
+              print(f"ZIP ready: {zip_path} — {size_mb:.2f} MB")
+
+          print("\n✅ Full year complete:", YEAR)
           PY
 
-      - name: Upload ZIP artifact
+      - name: Upload yearly ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XAUUSD_TICK_${{ matrix.year }}_${{ matrix.month }}_DUKASCOPY
-          path: output/*.zip
+          name: XAUUSD_TICK_${{ matrix.year }}_JAN_DEC_DUKASCOPY
+          path: output_${{ matrix.year }}/*.zip
           retention-days: 7
