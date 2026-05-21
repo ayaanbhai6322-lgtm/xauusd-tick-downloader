@@ -1,18 +1,12 @@
-name: XAUUSD 2015-2022 ALL IN ONE
+name: XAUUSD ONE JOB 2015-2022
 
 on:
   workflow_dispatch:
 
 jobs:
-  download-year:
+  download-all:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        year: ["2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022"]
 
     steps:
       - name: Set up Python
@@ -23,31 +17,36 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Download XAUUSD year
-        env:
-          YEAR: ${{ matrix.year }}
+      - name: Download XAUUSD 2015 to 2022 one by one
         run: |
           python - << 'PY'
-          import os, csv, lzma, struct, zipfile, calendar, time
+          import os
+          import csv
+          import lzma
+          import struct
+          import zipfile
+          import calendar
+          import time
           from datetime import datetime, timedelta
           import requests
 
           SYMBOL = "XAUUSD"
-          YEAR = int(os.environ["YEAR"])
           PRICE_DIVISOR = 1000.0
+          START_YEAR = 2015
+          END_YEAR = 2022
 
-          out_dir = f"output_{YEAR}"
-          os.makedirs(out_dir, exist_ok=True)
+          OUT_DIR = "all_months"
+          os.makedirs(OUT_DIR, exist_ok=True)
 
           def dukascopy_url(symbol, year, month, day, hour):
               return f"https://datafeed.dukascopy.com/datafeed/{symbol}/{year}/{month-1:02d}/{day:02d}/{hour:02d}h_ticks.bi5"
 
-          def download_hour(symbol, year, month, day, hour, retries=4):
+          def download_hour(symbol, year, month, day, hour, retries=5):
               url = dukascopy_url(symbol, year, month, day, hour)
 
               for attempt in range(retries):
                   try:
-                      r = requests.get(url, timeout=45)
+                      r = requests.get(url, timeout=60)
 
                       if r.status_code != 200 or len(r.content) == 0:
                           return []
@@ -77,78 +76,80 @@ jobs:
 
                       return ticks
 
-                  except Exception:
-                      time.sleep(3)
+                  except Exception as e:
+                      print(f"Retry {attempt+1}/{retries} failed: {url} | {e}", flush=True)
+                      time.sleep(5)
 
               return []
 
-          for MONTH in range(1, 13):
-              tag = f"{YEAR}_{MONTH:02d}"
-              csv_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.csv")
-              zip_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.zip")
+          total_zip_count = 0
 
-              days = calendar.monthrange(YEAR, MONTH)[1]
-              total_ticks = 0
+          for YEAR in range(START_YEAR, END_YEAR + 1):
+              print("\n" + "#" * 80)
+              print(f"START YEAR: {YEAR}")
+              print("#" * 80, flush=True)
 
-              print("=" * 60)
-              print(f"Starting {SYMBOL} {tag}")
-              print("=" * 60)
+              for MONTH in range(1, 13):
+                  tag = f"{YEAR}_{MONTH:02d}"
+                  csv_path = f"{SYMBOL}_TICK_{tag}_DUKASCOPY.csv"
+                  zip_path = os.path.join(OUT_DIR, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.zip")
 
-              with open(csv_path, "w", newline="") as f:
-                  writer = csv.writer(f)
-                  writer.writerow(["time", "bid", "ask", "bid_volume", "ask_volume"])
+                  days = calendar.monthrange(YEAR, MONTH)[1]
+                  total_ticks = 0
 
-                  for day in range(1, days + 1):
-                      day_ticks = 0
+                  print("\n" + "=" * 70)
+                  print(f"START MONTH: {tag}")
+                  print("=" * 70, flush=True)
 
-                      for hour in range(24):
-                          ticks = download_hour(SYMBOL, YEAR, MONTH, day, hour)
+                  with open(csv_path, "w", newline="") as f:
+                      writer = csv.writer(f)
+                      writer.writerow(["time", "bid", "ask", "bid_volume", "ask_volume"])
 
-                          if ticks:
-                              writer.writerows(ticks)
-                              day_ticks += len(ticks)
-                              total_ticks += len(ticks)
+                      for day in range(1, days + 1):
+                          day_ticks = 0
 
-                      print(f"Day {day:02d}/{days} — ticks: {day_ticks:,}", flush=True)
+                          for hour in range(24):
+                              ticks = download_hour(SYMBOL, YEAR, MONTH, day, hour)
 
-              print(f"Month complete: {tag} — total ticks: {total_ticks:,}")
+                              if ticks:
+                                  writer.writerows(ticks)
+                                  day_ticks += len(ticks)
+                                  total_ticks += len(ticks)
 
-              with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-                  z.write(csv_path, arcname=os.path.basename(csv_path))
+                          print(f"Day {day:02d}/{days} — ticks: {day_ticks:,}", flush=True)
 
-              os.remove(csv_path)
-              print(f"ZIP ready: {zip_path}")
+                  with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+                      z.write(csv_path, arcname=os.path.basename(csv_path))
 
-          print("Full year complete:", YEAR)
+                  os.remove(csv_path)
+
+                  total_zip_count += 1
+                  size_mb = os.path.getsize(zip_path) / 1024 / 1024
+
+                  print(f"MONTH COMPLETE: {tag} — total ticks: {total_ticks:,}", flush=True)
+                  print(f"ZIP READY: {zip_path} — {size_mb:.2f} MB", flush=True)
+                  print(f"TOTAL ZIP DONE: {total_zip_count}/96", flush=True)
+
+          if total_zip_count != 96:
+              raise Exception(f"Expected 96 ZIP files, but got {total_zip_count}")
+
+          print("\nALL COMPLETE. 96 monthly ZIP files created.", flush=True)
           PY
 
-      - name: Upload temporary yearly artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: TEMP_DO_NOT_DOWNLOAD_XAUUSD_${{ matrix.year }}
-          path: output_${{ matrix.year }}/*.zip
-          retention-days: 1
-
-  combine-all:
-    needs: download-year
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download all temporary artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: TEMP_DO_NOT_DOWNLOAD_XAUUSD_*
-          path: all_months
-          merge-multiple: true
-
-      - name: Show all files
+      - name: Verify 96 ZIP files
         run: |
-          find all_months -type f -name "*.zip" | sort
-          find all_months -type f -name "*.zip" | wc -l
+          COUNT=$(find all_months -type f -name "*.zip" | wc -l)
+          echo "ZIP count: $COUNT"
 
-      - name: Upload final all-in-one artifact
+          if [ "$COUNT" -ne 96 ]; then
+            echo "ERROR: Expected 96 ZIP files, got $COUNT"
+            exit 1
+          fi
+
+      - name: Upload final one-click artifact
         uses: actions/upload-artifact@v4
         with:
           name: DOWNLOAD_THIS_XAUUSD_2015_TO_2022_ALL_IN_ONE
           path: all_months/*.zip
           retention-days: 7
+          compression-level: 0
