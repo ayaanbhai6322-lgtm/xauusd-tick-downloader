@@ -1,70 +1,167 @@
-name: Download XAUUSD last 12 months tick data
+name: XAUUSD Tick Download
 
 on:
   workflow_dispatch:
 
 jobs:
-  download-month:
-    name: XAUUSD ${{ matrix.year }}-${{ matrix.month }}
+  download:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         include:
-          - year: 2025
-            month: 5
-          - year: 2025
-            month: 6
-          - year: 2025
-            month: 7
-          - year: 2025
-            month: 8
-          - year: 2025
-            month: 9
-          - year: 2025
-            month: 10
-          - year: 2025
-            month: 11
-          - year: 2025
-            month: 12
-          - year: 2026
-            month: 1
-          - year: 2026
-            month: 2
-          - year: 2026
-            month: 3
-          - year: 2026
-            month: 4
+          # 2025 Jan-Apr
+          - year: "2025"
+            month: "01"
+          - year: "2025"
+            month: "02"
+          - year: "2025"
+            month: "03"
+          - year: "2025"
+            month: "04"
+
+          # 2023 Jan-Dec
+          - year: "2023"
+            month: "01"
+          - year: "2023"
+            month: "02"
+          - year: "2023"
+            month: "03"
+          - year: "2023"
+            month: "04"
+          - year: "2023"
+            month: "05"
+          - year: "2023"
+            month: "06"
+          - year: "2023"
+            month: "07"
+          - year: "2023"
+            month: "08"
+          - year: "2023"
+            month: "09"
+          - year: "2023"
+            month: "10"
+          - year: "2023"
+            month: "11"
+          - year: "2023"
+            month: "12"
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
+      - name: Install requests
+        run: pip install requests
 
-      - name: Download monthly XAUUSD tick data
+      - name: Download XAUUSD month
+        env:
+          YEAR: ${{ matrix.year }}
+          MONTH: ${{ matrix.month }}
         run: |
-          python download_xauusd_month.py \
-            --symbol XAUUSD \
-            --year ${{ matrix.year }} \
-            --month ${{ matrix.month }} \
-            --output-dir output
+          python - << 'PY'
+          import os, csv, lzma, struct, zipfile, calendar, time
+          from datetime import datetime, timedelta
+          import requests
 
-      - name: Upload monthly ZIP artifact
+          SYMBOL = "XAUUSD"
+          YEAR = int(os.environ["YEAR"])
+          MONTH = int(os.environ["MONTH"])
+          PRICE_DIVISOR = 1000.0
+
+          out_dir = "output"
+          os.makedirs(out_dir, exist_ok=True)
+
+          tag = f"{YEAR}_{MONTH:02d}"
+          csv_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.csv")
+          zip_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.zip")
+
+          def dukascopy_url(symbol, year, month, day, hour):
+              # Dukascopy month zero-based: Jan=00, Feb=01, Dec=11
+              return f"https://datafeed.dukascopy.com/datafeed/{symbol}/{year}/{month-1:02d}/{day:02d}/{hour:02d}h_ticks.bi5"
+
+          def download_hour(symbol, year, month, day, hour, retries=4):
+              url = dukascopy_url(symbol, year, month, day, hour)
+
+              for attempt in range(retries):
+                  try:
+                      r = requests.get(url, timeout=45)
+
+                      if r.status_code != 200 or len(r.content) == 0:
+                          return []
+
+                      raw = lzma.decompress(r.content)
+
+                      ticks = []
+                      base_time = datetime(year, month, day, hour)
+
+                      for i in range(0, len(raw), 20):
+                          chunk = raw[i:i+20]
+                          if len(chunk) < 20:
+                              continue
+
+                          ms, ask_i, bid_i, ask_vol, bid_vol = struct.unpack(">IIIff", chunk)
+
+                          t = base_time + timedelta(milliseconds=ms)
+                          ask = ask_i / PRICE_DIVISOR
+                          bid = bid_i / PRICE_DIVISOR
+
+                          ticks.append([
+                              t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                              bid,
+                              ask,
+                              bid_vol,
+                              ask_vol
+                          ])
+
+                      return ticks
+
+                  except Exception as e:
+                      print(f"Retry {attempt+1}/{retries} failed: {url} | {e}")
+                      time.sleep(3)
+
+              return []
+
+          days = calendar.monthrange(YEAR, MONTH)[1]
+
+          print("=" * 60)
+          print(f"Starting {SYMBOL} {tag}")
+          print("=" * 60)
+
+          total_ticks = 0
+
+          with open(csv_path, "w", newline="") as f:
+              writer = csv.writer(f)
+              writer.writerow(["time", "bid", "ask", "bid_volume", "ask_volume"])
+
+              for day in range(1, days + 1):
+                  day_ticks = 0
+
+                  for hour in range(24):
+                      ticks = download_hour(SYMBOL, YEAR, MONTH, day, hour)
+
+                      if ticks:
+                          writer.writerows(ticks)
+                          day_ticks += len(ticks)
+                          total_ticks += len(ticks)
+
+                  print(f"Day {day:02d}/{days} — ticks: {day_ticks:,}", flush=True)
+
+          print(f"Month complete: {tag} — total ticks: {total_ticks:,}")
+
+          with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+              z.write(csv_path, arcname=os.path.basename(csv_path))
+
+          size_mb = os.path.getsize(zip_path) / 1024 / 1024
+          print(f"ZIP ready: {zip_path} — {size_mb:.2f} MB")
+          PY
+
+      - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
           name: XAUUSD_TICK_${{ matrix.year }}_${{ matrix.month }}_DUKASCOPY
           path: output/*.zip
-          if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
