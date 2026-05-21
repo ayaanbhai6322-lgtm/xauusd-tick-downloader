@@ -1,4 +1,4 @@
-              name: XAUUSD Tick Download 2015 to 2022 ALL IN ONE
+name: XAUUSD 2015-2022 ALL IN ONE
 
 on:
   workflow_dispatch:
@@ -53,7 +53,6 @@ jobs:
                           return []
 
                       raw = lzma.decompress(r.content)
-
                       ticks = []
                       base_time = datetime(year, month, day, hour)
 
@@ -78,15 +77,10 @@ jobs:
 
                       return ticks
 
-                  except Exception as e:
-                      print(f"Retry {attempt+1}/{retries} failed: {url} | {e}")
+                  except Exception:
                       time.sleep(3)
 
               return []
-
-          print("=" * 70)
-          print(f"Starting XAUUSD full year: {YEAR}")
-          print("=" * 70)
 
           for MONTH in range(1, 13):
               tag = f"{YEAR}_{MONTH:02d}"
@@ -94,12 +88,11 @@ jobs:
               zip_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.zip")
 
               days = calendar.monthrange(YEAR, MONTH)[1]
+              total_ticks = 0
 
-              print("\n" + "=" * 60)
+              print("=" * 60)
               print(f"Starting {SYMBOL} {tag}")
               print("=" * 60)
-
-              total_ticks = 0
 
               with open(csv_path, "w", newline="") as f:
                   writer = csv.writer(f)
@@ -124,17 +117,15 @@ jobs:
                   z.write(csv_path, arcname=os.path.basename(csv_path))
 
               os.remove(csv_path)
+              print(f"ZIP ready: {zip_path}")
 
-              size_mb = os.path.getsize(zip_path) / 1024 / 1024
-              print(f"ZIP ready: {zip_path} — {size_mb:.2f} MB")
-
-          print("\nFull year complete:", YEAR)
+          print("Full year complete:", YEAR)
           PY
 
-      - name: Upload yearly artifact
+      - name: Upload temporary yearly artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XAUUSD_TICK_${{ matrix.year }}_JAN_DEC_DUKASCOPY
+          name: TEMP_DO_NOT_DOWNLOAD_XAUUSD_${{ matrix.year }}
           path: output_${{ matrix.year }}/*.zip
           retention-days: 1
 
@@ -143,23 +134,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download all yearly artifacts
+      - name: Download all temporary artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: XAUUSD_TICK_*_JAN_DEC_DUKASCOPY
+          pattern: TEMP_DO_NOT_DOWNLOAD_XAUUSD_*
           path: all_months
           merge-multiple: true
 
-      - name: Check files
+      - name: Show all files
         run: |
-          echo "All monthly ZIP files:"
           find all_months -type f -name "*.zip" | sort
-          echo "Total ZIP count:"
           find all_months -type f -name "*.zip" | wc -l
 
-      - name: Upload ONE all-in-one artifact
+      - name: Upload final all-in-one artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XAUUSD_TICK_2015_TO_2022_ALL_IN_ONE
+          name: DOWNLOAD_THIS_XAUUSD_2015_TO_2022_ALL_IN_ONE
           path: all_months/*.zip
           retention-days: 7
