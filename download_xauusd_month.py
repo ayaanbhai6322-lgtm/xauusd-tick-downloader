@@ -1,162 +1,165 @@
-import argparse
-import calendar
-import csv
-import lzma
-import os
-import struct
-import zipfile
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+name: XAUUSD Tick Download 2015 to 2022 ALL IN ONE
 
-import requests
+on:
+  workflow_dispatch:
 
+jobs:
+  download-year:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
 
-def dukascopy_url(symbol: str, dt: datetime) -> str:
-    return (
-        f"https://datafeed.dukascopy.com/datafeed/{symbol}/"
-        f"{dt.year}/{dt.month - 1:02d}/{dt.day:02d}/{dt.hour:02d}h_ticks.bi5"
-    )
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        year: ["2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022"]
 
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-def download_hour(symbol: str, dt: datetime, timeout: int = 30):
-    url = dukascopy_url(symbol, dt)
-    try:
-        response = requests.get(url, timeout=timeout)
-        if response.status_code != 200 or len(response.content) < 20:
-            return None, f"SKIP {dt:%Y-%m-%d %H:%M} status={response.status_code} size={len(response.content)}"
-        return response.content, f"OK {dt:%Y-%m-%d %H:%M} size={len(response.content)}"
-    except Exception as exc:
-        return None, f"ERROR {dt:%Y-%m-%d %H:%M} {exc}"
+      - name: Install requests
+        run: pip install requests
 
+      - name: Download XAUUSD year
+        env:
+          YEAR: ${{ matrix.year }}
+        run: |
+          python - << 'PY'
+          import os, csv, lzma, struct, zipfile, calendar, time
+          from datetime import datetime, timedelta
+          import requests
 
-def parse_bi5_ticks(content: bytes, hour_dt: datetime, price_scale: float):
-    try:
-        raw = lzma.decompress(content)
-    except Exception as exc:
-        return [], f"DECOMPRESS_FAILED {hour_dt:%Y-%m-%d %H:%M} {exc}"
+          SYMBOL = "XAUUSD"
+          YEAR = int(os.environ["YEAR"])
+          PRICE_DIVISOR = 1000.0
 
-    rows = []
-    record_size = 20
+          out_dir = f"output_{YEAR}"
+          os.makedirs(out_dir, exist_ok=True)
 
-    for i in range(0, len(raw), record_size):
-        chunk = raw[i:i + record_size]
-        if len(chunk) != record_size:
-            continue
+          def dukascopy_url(symbol, year, month, day, hour):
+              return f"https://datafeed.dukascopy.com/datafeed/{symbol}/{year}/{month-1:02d}/{day:02d}/{hour:02d}h_ticks.bi5"
 
-        time_ms, ask_i, bid_i, ask_vol, bid_vol = struct.unpack(">IIIff", chunk)
-        utc_time = hour_dt + timedelta(milliseconds=time_ms)
-        ist_time = utc_time.astimezone(ZoneInfo("Asia/Kolkata"))
+          def download_hour(symbol, year, month, day, hour, retries=4):
+              url = dukascopy_url(symbol, year, month, day, hour)
 
-        bid = bid_i / price_scale
-        ask = ask_i / price_scale
+              for attempt in range(retries):
+                  try:
+                      r = requests.get(url, timeout=45)
 
-        rows.append([
-            utc_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            ist_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            f"{bid:.3f}",
-            f"{ask:.3f}",
-            f"{bid_vol:.6f}",
-            f"{ask_vol:.6f}",
-        ])
+                      if r.status_code != 200 or len(r.content) == 0:
+                          return []
 
-    return rows, None
+                      raw = lzma.decompress(r.content)
 
+                      ticks = []
+                      base_time = datetime(year, month, day, hour)
 
-def download_month(symbol: str, year: int, month: int, output_dir: str, price_scale: float):
-    os.makedirs(output_dir, exist_ok=True)
+                      for i in range(0, len(raw), 20):
+                          chunk = raw[i:i+20]
+                          if len(chunk) < 20:
+                              continue
 
-    month_label = f"{year}_{month:02d}"
-    csv_name = f"{symbol}_TICK_{month_label}_DUKASCOPY_BID_ASK_UTC_IST.csv"
-    log_name = f"{symbol}_TICK_{month_label}_download_log.txt"
-    zip_name = f"{symbol}_TICK_{month_label}_DUKASCOPY.zip"
+                          ms, ask_i, bid_i, ask_vol, bid_vol = struct.unpack(">IIIff", chunk)
 
-    csv_path = os.path.join(output_dir, csv_name)
-    log_path = os.path.join(output_dir, log_name)
-    zip_path = os.path.join(output_dir, zip_name)
+                          t = base_time + timedelta(milliseconds=ms)
+                          ask = ask_i / PRICE_DIVISOR
+                          bid = bid_i / PRICE_DIVISOR
 
-    last_day = calendar.monthrange(year, month)[1]
-    start_dt = datetime(year, month, 1, 0, 0, tzinfo=timezone.utc)
-    end_dt = datetime(year, month, last_day, 23, 0, tzinfo=timezone.utc)
+                          ticks.append([
+                              t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                              bid,
+                              ask,
+                              bid_vol,
+                              ask_vol
+                          ])
 
-    total_ticks = 0
-    downloaded_hours = 0
-    skipped_hours = 0
-    error_hours = 0
-    log_lines = []
+                      return ticks
 
-    print(f"START {symbol} {month_label}")
-    print(f"UTC range: {start_dt} to {end_dt}")
+                  except Exception as e:
+                      print(f"Retry {attempt+1}/{retries} failed: {url} | {e}")
+                      time.sleep(3)
 
-    with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(["utc_time", "ist_time", "bid", "ask", "bid_volume", "ask_volume"])
+              return []
 
-        current = start_dt
-        while current <= end_dt:
-            content, message = download_hour(symbol, current)
-            log_lines.append(message)
+          print("=" * 70)
+          print(f"Starting XAUUSD full year: {YEAR}")
+          print("=" * 70)
 
-            if content is None:
-                skipped_hours += 1
-                if message.startswith("ERROR"):
-                    error_hours += 1
-            else:
-                rows, parse_error = parse_bi5_ticks(content, current, price_scale)
-                if parse_error:
-                    log_lines.append(parse_error)
-                    error_hours += 1
-                    skipped_hours += 1
-                elif rows:
-                    writer.writerows(rows)
-                    total_ticks += len(rows)
-                    downloaded_hours += 1
-                else:
-                    skipped_hours += 1
+          for MONTH in range(1, 13):
+              tag = f"{YEAR}_{MONTH:02d}"
+              csv_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.csv")
+              zip_path = os.path.join(out_dir, f"{SYMBOL}_TICK_{tag}_DUKASCOPY.zip")
 
-            current += timedelta(hours=1)
+              days = calendar.monthrange(YEAR, MONTH)[1]
 
-    with open(log_path, "w", encoding="utf-8") as log_file:
-        log_file.write("\n".join(log_lines))
-        log_file.write("\n\n")
-        log_file.write(f"symbol={symbol}\n")
-        log_file.write(f"month={month_label}\n")
-        log_file.write(f"total_ticks={total_ticks}\n")
-        log_file.write(f"downloaded_hours={downloaded_hours}\n")
-        log_file.write(f"skipped_hours={skipped_hours}\n")
-        log_file.write(f"error_hours={error_hours}\n")
-        log_file.write(f"csv_file={csv_name}\n")
+              print("\n" + "=" * 60)
+              print(f"Starting {SYMBOL} {tag}")
+              print("=" * 60)
 
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zip_file:
-        zip_file.write(csv_path, arcname=csv_name)
-        zip_file.write(log_path, arcname=log_name)
+              total_ticks = 0
 
-    print("DONE")
-    print(f"symbol={symbol}")
-    print(f"month={month_label}")
-    print(f"total_ticks={total_ticks}")
-    print(f"downloaded_hours={downloaded_hours}")
-    print(f"skipped_hours={skipped_hours}")
-    print(f"error_hours={error_hours}")
-    print(f"zip_path={zip_path}")
+              with open(csv_path, "w", newline="") as f:
+                  writer = csv.writer(f)
+                  writer.writerow(["time", "bid", "ask", "bid_volume", "ask_volume"])
 
+                  for day in range(1, days + 1):
+                      day_ticks = 0
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", default="XAUUSD")
-    parser.add_argument("--year", type=int, required=True)
-    parser.add_argument("--month", type=int, required=True)
-    parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--price-scale", type=float, default=1000.0)
-    args = parser.parse_args()
+                      for hour in range(24):
+                          ticks = download_hour(SYMBOL, YEAR, MONTH, day, hour)
 
-    download_month(
-        symbol=args.symbol,
-        year=args.year,
-        month=args.month,
-        output_dir=args.output_dir,
-        price_scale=args.price_scale,
-    )
+                          if ticks:
+                              writer.writerows(ticks)
+                              day_ticks += len(ticks)
+                              total_ticks += len(ticks)
 
+                      print(f"Day {day:02d}/{days} — ticks: {day_ticks:,}", flush=True)
 
-if __name__ == "__main__":
-    main()
+              print(f"Month complete: {tag} — total ticks: {total_ticks:,}")
+
+              with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+                  z.write(csv_path, arcname=os.path.basename(csv_path))
+
+              os.remove(csv_path)
+
+              size_mb = os.path.getsize(zip_path) / 1024 / 1024
+              print(f"ZIP ready: {zip_path} — {size_mb:.2f} MB")
+
+          print("\nFull year complete:", YEAR)
+          PY
+
+      - name: Upload yearly artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XAUUSD_TICK_${{ matrix.year }}_JAN_DEC_DUKASCOPY
+          path: output_${{ matrix.year }}/*.zip
+          retention-days: 1
+
+  combine-all:
+    needs: download-year
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all yearly artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: XAUUSD_TICK_*_JAN_DEC_DUKASCOPY
+          path: all_months
+          merge-multiple: true
+
+      - name: Check files
+        run: |
+          echo "All monthly ZIP files:"
+          find all_months -type f -name "*.zip" | sort
+          echo "Total ZIP count:"
+          find all_months -type f -name "*.zip" | wc -l
+
+      - name: Upload ONE all-in-one artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XAUUSD_TICK_2015_TO_2022_ALL_IN_ONE
+          path: all_months/*.zip
+          retention-days: 7
