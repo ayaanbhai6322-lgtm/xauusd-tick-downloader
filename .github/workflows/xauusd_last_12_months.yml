@@ -1,4 +1,4 @@
-name: XAUUSD Tick Download 2015 to 2022
+              name: XAUUSD Tick Download 2015 to 2022 ALL IN ONE
 
 on:
   workflow_dispatch:
@@ -40,7 +40,6 @@ jobs:
           os.makedirs(out_dir, exist_ok=True)
 
           def dukascopy_url(symbol, year, month, day, hour):
-              # Dukascopy month zero-based: Jan=00, Feb=01, Dec=11
               return f"https://datafeed.dukascopy.com/datafeed/{symbol}/{year}/{month-1:02d}/{day:02d}/{hour:02d}h_ticks.bi5"
 
           def download_hour(symbol, year, month, day, hour, retries=4):
@@ -129,12 +128,38 @@ jobs:
               size_mb = os.path.getsize(zip_path) / 1024 / 1024
               print(f"ZIP ready: {zip_path} — {size_mb:.2f} MB")
 
-          print("\n✅ Full year complete:", YEAR)
+          print("\nFull year complete:", YEAR)
           PY
 
-      - name: Upload yearly ZIP artifact
+      - name: Upload yearly artifact
         uses: actions/upload-artifact@v4
         with:
           name: XAUUSD_TICK_${{ matrix.year }}_JAN_DEC_DUKASCOPY
           path: output_${{ matrix.year }}/*.zip
+          retention-days: 1
+
+  combine-all:
+    needs: download-year
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all yearly artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: XAUUSD_TICK_*_JAN_DEC_DUKASCOPY
+          path: all_months
+          merge-multiple: true
+
+      - name: Check files
+        run: |
+          echo "All monthly ZIP files:"
+          find all_months -type f -name "*.zip" | sort
+          echo "Total ZIP count:"
+          find all_months -type f -name "*.zip" | wc -l
+
+      - name: Upload ONE all-in-one artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XAUUSD_TICK_2015_TO_2022_ALL_IN_ONE
+          path: all_months/*.zip
           retention-days: 7
